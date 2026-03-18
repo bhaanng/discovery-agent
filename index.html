@@ -544,7 +544,8 @@
                 });
 
                 // Phase 1: Always search first to get actual results
-                const searchResults = await searchProducts(userMessage, sessionContext.gatheredInfo);
+                // Use empty object since we just reset the context (state updates are async)
+                const searchResults = await searchProducts(userMessage, {});
 
                 if (!searchResults || !searchResults.hits || searchResults.hits.length === 0) {
                     setMessages(prev => [...prev, {
@@ -561,22 +562,21 @@
                 console.log('Query Analysis:', {
                     query: userMessage,
                     analysis: analysis,
-                    sessionContext: {
-                        clarificationCount: sessionContext.clarificationCount,
-                        searchPerformed: sessionContext.searchPerformed
-                    }
+                    note: 'Context was just reset for new query'
                 });
 
-                if (analysis.needsClarification && sessionContext.clarificationCount === 0 && !sessionContext.searchPerformed) {
+                // Since we just reset context, clarificationCount is 0 and searchPerformed is false
+                if (analysis.needsClarification) {
                     // Store search results and generate clarifying questions based on them
                     console.log('Storing initial search results:', searchResults.hits?.length, 'products');
                     setSessionContext(prev => ({
                         ...prev,
                         initialSearchResults: searchResults,
-                        clarificationCount: 1
+                        clarificationCount: 1,
+                        originalQuery: userMessage
                     }));
 
-                    const clarification = generateClarifyingQuestions(userMessage, sessionContext, searchResults);
+                    const clarification = generateClarifyingQuestions(userMessage, { gatheredInfo: {} }, searchResults);
 
                     setMessages(prev => [...prev, {
                         role: 'agent',
@@ -585,8 +585,8 @@
                         timestamp: new Date()
                     }]);
                 } else {
-                    // Phase 3: Show results (either refined or first time with specific query)
-                    const formatted = formatSearchResults(searchResults, sessionContext.gatheredInfo);
+                    // Phase 3: Show results (specific query - no clarification needed)
+                    const formatted = formatSearchResults(searchResults, {});
 
                     setMessages(prev => [...prev, {
                         role: 'agent',
@@ -597,12 +597,13 @@
 
                     setSessionContext(prev => ({
                         ...prev,
-                        searchPerformed: true
+                        searchPerformed: true,
+                        originalQuery: userMessage
                     }));
 
                     // Phase 4: Post-search refinement
                     await new Promise(resolve => setTimeout(resolve, 500));
-                    const refinementQ = generateRefinementQuestion(searchResults, sessionContext);
+                    const refinementQ = generateRefinementQuestion(searchResults, { gatheredInfo: {} });
 
                     if (refinementQ) {
                         setMessages(prev => [...prev, {
