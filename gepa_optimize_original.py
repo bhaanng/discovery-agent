@@ -3,19 +3,11 @@
 GEPA Optimization for Product Discovery Agent
 
 This script optimizes the agent's decision logic and prompts using GEPA framework.
-Uses LLM-as-a-judge for comprehensive evaluation across multiple dimensions.
 """
 
-import sys
-import os
 import json
 from typing import Dict, List, Any
-
-# Add GEPA to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'gepa', 'src'))
-
-from gepa.optimize_anything import optimize_anything, GEPAConfig, EngineConfig, ReflectionConfig
-from llm_evaluator import evaluate_trace_with_llm_judges
+from gepa import optimize_anything
 
 # Test cases with expected behaviors - COMPREHENSIVE for better GEPA learning
 # 25 test cases covering intent, ingredients, context, safety, and edge cases
@@ -425,47 +417,38 @@ Don't ask if:
 
 def evaluate_agent_trace(query: str, trace: Dict[str, Any]) -> Dict[str, float]:
     """
-    Evaluate agent performance using LLM-as-a-judge across 10 dimensions.
+    Evaluate agent performance on a single query.
 
-    Returns metrics for Pareto optimization (all 0-1 scale, higher is better):
-
-    Core Metrics (maximize all):
-    - goal_identification: Did agent understand user intent?
-    - cognitive_load: How easy were questions to answer? (higher = lower friction)
-    - information_gain: Did questions effectively narrow results?
-    - redundancy_avoidance: Avoided asking redundant questions?
-
-    Search Quality Metrics (maximize all):
-    - constraint_satisfaction: Do results match user requirements?
-    - precision_at_5: Are top 5 results relevant?
-    - ndcg: Are best results ranked first?
-    - zero_results_handling: Handled zero results well?
-
-    Flow Metrics (maximize all):
-    - refinement_quality: Good follow-up questions?
-    - drift_avoidance: Stayed on topic throughout?
-
-    Overall Score: Weighted combination of all metrics
+    Returns multiple objectives for Pareto optimization:
+    - turns_to_success: Number of conversation turns (minimize)
+    - relevance_score: Product match quality 0-10 (maximize)
+    - question_efficiency: Quality of questions asked 0-1 (maximize)
+    - user_satisfied: Binary outcome (maximize)
     """
 
-    print(f"\n📊 Evaluating: {query[:60]}...")
+    # Extract metrics from trace
+    turns = trace.get("turns_to_success", 10)  # default penalty
 
-    # Use LLM judges for comprehensive evaluation
-    metrics = evaluate_trace_with_llm_judges(trace)
+    # Calculate relevance (would need actual product evaluation)
+    relevance = trace.get("relevance_score", 5.0)
 
-    print(f"   ✓ Goal ID: {metrics.get('goal_identification', 0):.2f}")
-    print(f"   ✓ Cognitive Load: {metrics.get('cognitive_load', 0):.2f}")
-    print(f"   ✓ Info Gain: {metrics.get('information_gain', 0):.2f}")
-    print(f"   ✓ No Redundancy: {metrics.get('redundancy_avoidance', 0):.2f}")
-    print(f"   ✓ Constraints: {metrics.get('constraint_satisfaction', 0):.2f}")
-    print(f"   ✓ P@5: {metrics.get('precision_at_5', 0):.2f}")
-    print(f"   ✓ NDCG: {metrics.get('ndcg', 0):.2f}")
-    print(f"   ✓ Zero Results: {metrics.get('zero_results_handling', 0):.2f}")
-    print(f"   ✓ Refinement: {metrics.get('refinement_quality', 0):.2f}")
-    print(f"   ✓ No Drift: {metrics.get('drift_avoidance', 0):.2f}")
-    print(f"   → Overall: {metrics.get('overall_score', 0):.2f}")
+    # Calculate question efficiency
+    questions_asked = trace.get("questions_asked", [])
+    if questions_asked:
+        # Measure if questions reduced result set effectively
+        efficiency = sum(q.get("information_gain", 0.5) for q in questions_asked) / len(questions_asked)
+    else:
+        efficiency = 1.0 if turns <= 2 else 0.5
 
-    return metrics
+    # User satisfaction (simulated or actual)
+    satisfied = trace.get("user_satisfied", False)
+
+    return {
+        "turns_to_success": turns,  # minimize
+        "relevance_score": relevance,  # maximize (0-10)
+        "question_efficiency": efficiency,  # maximize (0-1)
+        "user_satisfied": 1.0 if satisfied else 0.0  # maximize
+    }
 
 
 def run_optimization(
@@ -509,26 +492,15 @@ def run_optimization(
         }
     ]
 
-    # Run optimization with LLM-as-a-judge metrics
+    # Run optimization
     result = optimize_anything(
         seed_artifacts=artifacts,
         train_examples=TEST_CASES,
         evaluator=evaluate_agent_trace,
         objectives=[
-            # Core conversational quality (40% weight)
-            {"name": "goal_identification", "direction": "maximize", "weight": 0.15},
-            {"name": "cognitive_load", "direction": "maximize", "weight": 0.10},
-            {"name": "information_gain", "direction": "maximize", "weight": 0.15},
-
-            # Search quality (40% weight)
-            {"name": "constraint_satisfaction", "direction": "maximize", "weight": 0.15},
-            {"name": "precision_at_5", "direction": "maximize", "weight": 0.10},
-            {"name": "ndcg", "direction": "maximize", "weight": 0.15},
-
-            # Flow quality (20% weight)
-            {"name": "redundancy_avoidance", "direction": "maximize", "weight": 0.10},
-            {"name": "refinement_quality", "direction": "maximize", "weight": 0.05},
-            {"name": "drift_avoidance", "direction": "maximize", "weight": 0.05}
+            {"name": "turns_to_success", "direction": "minimize", "weight": 0.3},
+            {"name": "relevance_score", "direction": "maximize", "weight": 0.4},
+            {"name": "user_satisfied", "direction": "maximize", "weight": 0.3}
         ],
         max_iterations=max_iterations,
         task_model=task_model,
@@ -550,25 +522,15 @@ def run_optimization(
 
     # Extract best solution
     best = result.get_best_by_weights({
-        "goal_identification": 0.15,
-        "cognitive_load": 0.10,
-        "information_gain": 0.15,
-        "constraint_satisfaction": 0.15,
-        "precision_at_5": 0.10,
-        "ndcg": 0.15,
-        "redundancy_avoidance": 0.10,
-        "refinement_quality": 0.05,
-        "drift_avoidance": 0.05
+        "turns_to_success": 0.3,
+        "relevance_score": 0.4,
+        "user_satisfied": 0.3
     })
 
     print("\n🏆 Best solution (weighted):")
-    print(f"   Overall Score: {best['metrics'].get('overall_score', 0):.2f}")
-    print(f"   Goal Identification: {best['metrics'].get('goal_identification', 0):.2f}")
-    print(f"   Cognitive Load: {best['metrics'].get('cognitive_load', 0):.2f}")
-    print(f"   Information Gain: {best['metrics'].get('information_gain', 0):.2f}")
-    print(f"   Constraint Satisfaction: {best['metrics'].get('constraint_satisfaction', 0):.2f}")
-    print(f"   Precision@5: {best['metrics'].get('precision_at_5', 0):.2f}")
-    print(f"   NDCG: {best['metrics'].get('ndcg', 0):.2f}")
+    print(f"   Turns: {best['metrics']['turns_to_success']:.1f}")
+    print(f"   Relevance: {best['metrics']['relevance_score']:.1f}/10")
+    print(f"   Satisfaction: {best['metrics']['user_satisfied']*100:.1f}%")
     print()
 
     # Save optimized artifacts

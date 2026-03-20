@@ -1,0 +1,847 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Product Discovery Agent - Cimulate</title>
+
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+
+    <!-- Babel for in-browser JSX compilation -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <style>
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        const Icon = ({ name, size = 24, className = "", strokeWidth = 2 }) => {
+            const iconRef = useRef(null);
+            useEffect(() => {
+                if (iconRef.current && window.lucide) {
+                    iconRef.current.innerHTML = `<i data-lucide="${name}" class="${className}" style="width:${size}px; height:${size}px; stroke-width:${strokeWidth};"></i>`;
+                    window.lucide.createIcons({ root: iconRef.current });
+                }
+            }, [name, size, className, strokeWidth]);
+            return <span ref={iconRef} className="inline-flex items-center justify-center"></span>;
+        };
+
+        // Cimulate API Configuration
+        const CIMULATE_CONFIG = {
+            endpoint: 'https://search-api.demo.search.cimulate.ai/api/v1/search',
+            customerId: 'cephora',
+            apiKey: '6827c3f6-2c53-4ed1-16d8-c7546de99c82'
+        };
+
+        const App = () => {
+            const [messages, setMessages] = useState([]);
+            const [inputValue, setInputValue] = useState("");
+            const [isLoading, setIsLoading] = useState(false);
+            const [selectedAnswers, setSelectedAnswers] = useState({});
+            const [sessionContext, setSessionContext] = useState({
+                originalQuery: null,
+                gatheredInfo: {},
+                clarificationCount: 0,
+                searchPerformed: false,
+                initialSearchResults: null
+            });
+
+            const chatEndRef = useRef(null);
+
+            useEffect(() => {
+                // Initial greeting
+                setMessages([{
+                    role: 'agent',
+                    content: "Hi! I'm here to help you discover the perfect products. What are you looking for today?",
+                    timestamp: new Date()
+                }]);
+            }, []);
+
+            useEffect(() => {
+                chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+            }, [messages]);
+
+            // Phase 1: Initial Query Analysis
+            const analyzeQuery = (query) => {
+                const lowerQuery = query.toLowerCase();
+
+                // Check for product category
+                const hasCategory =
+                    lowerQuery.includes('moisturizer') || lowerQuery.includes('moisturiser') ||
+                    lowerQuery.includes('serum') || lowerQuery.includes('cleanser') ||
+                    lowerQuery.includes('cream') || lowerQuery.includes('lotion') ||
+                    lowerQuery.includes('mask') || lowerQuery.includes('toner') ||
+                    lowerQuery.includes('sunscreen') || lowerQuery.includes('oil') ||
+                    lowerQuery.includes('foundation') || lowerQuery.includes('lipstick') ||
+                    lowerQuery.includes('mascara') || lowerQuery.includes('eyeshadow');
+
+                // Count specific details in query
+                let specificityScore = 0;
+
+                // Check for brand names (common brands)
+                const brands = ['clinique', 'caudalie', 'cerave', 'neutrogena', 'la roche', 'drunk elephant', 'tatcha', 'origins', 'kiehl'];
+                if (brands.some(brand => lowerQuery.includes(brand))) specificityScore += 2;
+
+                // Check for skin type
+                if (lowerQuery.includes('dry') || lowerQuery.includes('oily') || lowerQuery.includes('combination') ||
+                    lowerQuery.includes('sensitive') || lowerQuery.includes('normal')) specificityScore += 1;
+
+                // Check for specific concerns/benefits
+                const concerns = ['hydrat', 'anti-aging', 'acne', 'brighten', 'wrinkle', 'pore', 'firm', 'glow', 'repair', 'sooth'];
+                if (concerns.some(concern => lowerQuery.includes(concern))) specificityScore += 1;
+
+                // Check for price indicators
+                if (lowerQuery.includes('cheap') || lowerQuery.includes('affordable') || lowerQuery.includes('luxury') ||
+                    lowerQuery.includes('budget') || lowerQuery.includes('expensive') || /\$\d+/.test(lowerQuery)) specificityScore += 1;
+
+                // Check for specific formulation
+                if (lowerQuery.includes('gel') || lowerQuery.includes('cream-gel') || lowerQuery.includes('oil-free') ||
+                    lowerQuery.includes('lightweight') || lowerQuery.includes('rich') || lowerQuery.includes('thick')) specificityScore += 1;
+
+                // Check for ingredients
+                const ingredients = ['hyaluronic', 'retinol', 'vitamin', 'peptide', 'niacinamide', 'salicylic', 'glycolic'];
+                if (ingredients.some(ing => lowerQuery.includes(ing))) specificityScore += 1;
+
+                // Query is specific if it has 2+ specific details
+                const isSpecific = specificityScore >= 2;
+
+                // Query is too broad if it only has category or very simple
+                const isTooSimple = query.trim().split(/\s+/).length <= 5 && specificityScore < 2;
+
+                return {
+                    isSpecific: isSpecific,
+                    hasCategory: hasCategory,
+                    specificityScore: specificityScore,
+                    needsClarification: hasCategory && !isSpecific && isTooSimple
+                };
+            };
+
+            // Generate clarifying questions based on search results
+            const generateClarifyingQuestions = (query, context, searchResults) => {
+                const questions = [];
+
+                // Restate understanding
+                let restatement = `I understand you're looking for skincare products`;
+                if (query.toLowerCase().includes('moisturizer') || query.toLowerCase().includes('moisturiser')) {
+                    restatement = `I understand you're looking for a moisturizer`;
+                } else if (query.toLowerCase().includes('serum')) {
+                    restatement = `I understand you're looking for a serum`;
+                } else if (query.toLowerCase().includes('cleanser')) {
+                    restatement = `I understand you're looking for a cleanser`;
+                } else if (query.toLowerCase().includes('cream')) {
+                    restatement = `I understand you're looking for a cream`;
+                }
+
+                if (searchResults && searchResults.hits) {
+                    // Extract unique brands from search results
+                    const brands = [...new Set(searchResults.hits.slice(0, 10).map(h => h.brand_name))].filter(Boolean).slice(0, 5);
+
+                    // Extract price range from results
+                    const prices = searchResults.hits.map(h => h.price_numeric).filter(p => p > 0);
+                    const minPrice = Math.min(...prices);
+                    const maxPrice = Math.max(...prices);
+
+                    // Extract common highlights/attributes
+                    const allHighlights = searchResults.hits.flatMap(h => h.highlights || []);
+                    const highlightCounts = {};
+                    allHighlights.forEach(h => {
+                        highlightCounts[h] = (highlightCounts[h] || 0) + 1;
+                    });
+                    const topHighlights = Object.entries(highlightCounts)
+                        .sort((a, b) => b[1] - a[1])
+                        .slice(0, 5)
+                        .map(([h]) => h);
+
+                    // Question 1: Brand preference (based on actual results)
+                    if (!context.gatheredInfo.brand && brands.length > 0 && questions.length < 3) {
+                        questions.push({
+                            question: "Do you have a preferred brand?",
+                            why: `I found ${searchResults.hits.length} products from brands like ${brands.slice(0, 3).join(', ')}`,
+                            options: [...brands, "No preference"]
+                        });
+                    }
+
+                    // Question 2: Price range (based on actual results)
+                    if (!context.gatheredInfo.priceRange && prices.length > 0 && questions.length < 3) {
+                        const rangeBuckets = [];
+                        if (minPrice < 25) rangeBuckets.push("Under $25");
+                        if (maxPrice >= 25) rangeBuckets.push("$25-$50");
+                        if (maxPrice >= 50) rangeBuckets.push("$50-$100");
+                        if (maxPrice >= 100) rangeBuckets.push("Luxury ($100+)");
+
+                        questions.push({
+                            question: "What's your budget?",
+                            why: `Prices range from $${Math.round(minPrice)} to $${Math.round(maxPrice)}`,
+                            options: rangeBuckets
+                        });
+                    }
+
+                    // Question 3: Key concerns/attributes (based on highlights)
+                    if (!context.gatheredInfo.concern && topHighlights.length > 0 && questions.length < 3) {
+                        questions.push({
+                            question: "What's most important to you?",
+                            why: "I can filter for specific benefits based on what matters most",
+                            options: [...topHighlights.slice(0, 4), "Show all"]
+                        });
+                    }
+                } else {
+                    // Fallback to generic questions if no search results
+                    if (!context.gatheredInfo.priceRange && questions.length < 3) {
+                        questions.push({
+                            question: "What's your preferred price range?",
+                            why: "This helps me show products within your budget",
+                            options: ["Under $25", "$25-$50", "$50-$100", "Luxury ($100+)"]
+                        });
+                    }
+
+                    if (!context.gatheredInfo.concern && questions.length < 3) {
+                        questions.push({
+                            question: "What's your primary concern?",
+                            why: "I can match you with products that target your specific goals",
+                            options: ["Hydration", "Anti-aging", "Sensitive", "Oil control", "Show all"]
+                        });
+                    }
+                }
+
+                return {
+                    restatement,
+                    questions: questions.slice(0, 3) // Max 3 questions
+                };
+            };
+
+            // Phase 2: Call Cimulate API
+            const searchProducts = async (query, refinements = {}) => {
+                try {
+                    // Build search query with refinements
+                    let searchQuery = query;
+                    if (refinements.skinType) searchQuery += ` for ${refinements.skinType.toLowerCase()} skin`;
+                    if (refinements.concern) searchQuery += ` ${refinements.concern.toLowerCase()}`;
+
+                    const response = await fetch(CIMULATE_CONFIG.endpoint, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'x-cimulate-customer-id': CIMULATE_CONFIG.customerId,
+                            'x-cimulate-api-key': CIMULATE_CONFIG.apiKey
+                        },
+                        body: JSON.stringify({
+                            query: searchQuery,
+                            page_size: 300,
+                            include_facets: true
+                        })
+                    });
+
+                    if (!response.ok) {
+                        const errorText = await response.text();
+                        console.error('API Error Response:', errorText);
+                        throw new Error(`Search failed: ${response.status}`);
+                    }
+
+                    const data = await response.json();
+                    console.log('Cimulate API Response:', data);
+                    return data;
+                } catch (error) {
+                    console.error('Cimulate API Error:', error);
+                    console.error('Error details:', error.message);
+                    return null;
+                }
+            };
+
+            // Format search results
+            const formatSearchResults = (apiResponse, refinements) => {
+                console.log('Formatting results from:', apiResponse);
+
+                // Cimulate API returns results in "hits" array
+                let results = apiResponse?.hits || apiResponse?.results || [];
+
+                if (!apiResponse || results.length === 0) {
+                    console.warn('No results found in response:', apiResponse);
+                    return {
+                        message: "I couldn't find any products matching your criteria. Let me try adjusting the search.",
+                        products: []
+                    };
+                }
+
+                // Get top 6 results
+                const topProducts = results.slice(0, 6);
+                console.log('Top products:', topProducts);
+
+                // Build explanation of why these match
+                let matchExplanation = "Here are the top matches";
+                if (refinements.brand || refinements.priceRange || refinements.concern) {
+                    const criteria = [];
+                    if (refinements.brand && refinements.brand !== "No preference") criteria.push(refinements.brand);
+                    if (refinements.priceRange) criteria.push(refinements.priceRange);
+                    if (refinements.concern && refinements.concern !== "Show all") criteria.push(refinements.concern);
+
+                    if (criteria.length > 0) {
+                        matchExplanation = "Based on your preferences for " + criteria.join(", ") + ", here are the top matches";
+                    }
+                }
+
+                return {
+                    message: matchExplanation + ":",
+                    products: topProducts.map(p => ({
+                        id: p.product_id,
+                        name: p.product_name,
+                        brand: p.brand_name,
+                        price: p.price_numeric,
+                        image: p.primary_image_url,
+                        description: p.quick_look_description || p.short_description,
+                        rating: p.rating,
+                        url: p.product_url
+                    }))
+                };
+            };
+
+            // Generate post-search refinement questions
+            const generateRefinementQuestion = (searchResults, context) => {
+                const questions = [];
+
+                if (!context.gatheredInfo.formula) {
+                    questions.push({
+                        question: "Would you prefer a cream, gel, or oil formula?",
+                        why: "Different textures work better for different skin types and preferences",
+                        options: ["Cream", "Gel", "Oil", "No preference"]
+                    });
+                }
+
+                if (!context.gatheredInfo.ingredients) {
+                    questions.push({
+                        question: "Any ingredient preferences or concerns?",
+                        why: "I can filter for specific ingredients like hyaluronic acid, retinol, or exclude allergens",
+                        options: ["Fragrance-free", "Natural ingredients", "With retinol", "With hyaluronic acid", "No preference"]
+                    });
+                }
+
+                return questions[0] || null;
+            };
+
+            // Handle user message
+            const handleSendMessage = async (e) => {
+                if (e) e.preventDefault();
+                if (!inputValue.trim() || isLoading) return;
+
+                const userMessage = inputValue.trim();
+                setInputValue("");
+                setSelectedAnswers({}); // Clear previous selections
+
+                // Add user message
+                setMessages(prev => [...prev, {
+                    role: 'user',
+                    content: userMessage,
+                    timestamp: new Date()
+                }]);
+
+                setIsLoading(true);
+
+                // Simulate processing delay
+                await new Promise(resolve => setTimeout(resolve, 800));
+
+                // Update context if this is the first query
+                if (!sessionContext.originalQuery) {
+                    setSessionContext(prev => ({
+                        ...prev,
+                        originalQuery: userMessage
+                    }));
+                }
+
+                // Phase 1: Always search first to get actual results
+                const searchResults = await searchProducts(userMessage, sessionContext.gatheredInfo);
+
+                if (!searchResults || !searchResults.hits || searchResults.hits.length === 0) {
+                    setMessages(prev => [...prev, {
+                        role: 'agent',
+                        content: "I'm having trouble finding products. Please try a different search.",
+                        timestamp: new Date()
+                    }]);
+                    setIsLoading(false);
+                    return;
+                }
+
+                // Phase 2: Query Analysis - decide if we need clarification
+                const analysis = analyzeQuery(userMessage);
+                console.log('Query Analysis:', {
+                    query: userMessage,
+                    analysis: analysis,
+                    sessionContext: {
+                        clarificationCount: sessionContext.clarificationCount,
+                        searchPerformed: sessionContext.searchPerformed
+                    }
+                });
+
+                if (analysis.needsClarification && sessionContext.clarificationCount === 0 && !sessionContext.searchPerformed) {
+                    // Store search results and generate clarifying questions based on them
+                    console.log('Storing initial search results:', searchResults.hits?.length, 'products');
+                    setSessionContext(prev => ({
+                        ...prev,
+                        initialSearchResults: searchResults,
+                        clarificationCount: 1
+                    }));
+
+                    const clarification = generateClarifyingQuestions(userMessage, sessionContext, searchResults);
+
+                    setMessages(prev => [...prev, {
+                        role: 'agent',
+                        content: `${clarification.restatement}. I found ${searchResults.hits.length} products! To show you the best matches, I have a few quick questions (select one or more options):`,
+                        clarifyingQuestions: clarification.questions,
+                        timestamp: new Date()
+                    }]);
+                } else {
+                    // Phase 3: Show results (either refined or first time with specific query)
+                    const formatted = formatSearchResults(searchResults, sessionContext.gatheredInfo);
+
+                    setMessages(prev => [...prev, {
+                        role: 'agent',
+                        content: formatted.message,
+                        products: formatted.products,
+                        timestamp: new Date()
+                    }]);
+
+                    setSessionContext(prev => ({
+                        ...prev,
+                        searchPerformed: true
+                    }));
+
+                    // Phase 4: Post-search refinement
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    const refinementQ = generateRefinementQuestion(searchResults, sessionContext);
+
+                    if (refinementQ) {
+                        setMessages(prev => [...prev, {
+                            role: 'agent',
+                            content: "Would you like to refine your search further?",
+                            clarifyingQuestions: [refinementQ],
+                            timestamp: new Date()
+                        }]);
+                    }
+                }
+
+                setIsLoading(false);
+            };
+
+            // Toggle answer selection
+            const toggleAnswer = (question, answer) => {
+                setSelectedAnswers(prev => {
+                    const key = question;
+                    const current = prev[key] || [];
+
+                    if (current.includes(answer)) {
+                        // Deselect
+                        return {
+                            ...prev,
+                            [key]: current.filter(a => a !== answer)
+                        };
+                    } else {
+                        // Select
+                        return {
+                            ...prev,
+                            [key]: [...current, answer]
+                        };
+                    }
+                });
+            };
+
+            // Execute search with selected answers
+            const executeSearchWithAnswers = async () => {
+                if (Object.keys(selectedAnswers).length === 0) {
+                    console.log('No answers selected');
+                    return;
+                }
+
+                console.log('executeSearchWithAnswers called');
+                console.log('Selected answers:', selectedAnswers);
+                console.log('Current sessionContext:', sessionContext);
+
+                setIsLoading(true);
+
+                // Build user message from selections
+                const userMessage = Object.entries(selectedAnswers)
+                    .filter(([_, answers]) => answers.length > 0)
+                    .map(([question, answers]) => `${answers.join(', ')}`)
+                    .join(' • ');
+
+                setMessages(prev => [...prev, {
+                    role: 'user',
+                    content: userMessage,
+                    timestamp: new Date()
+                }]);
+
+                await new Promise(resolve => setTimeout(resolve, 500));
+
+                // Build new context from selections
+                const newContext = { ...sessionContext };
+                Object.entries(selectedAnswers).forEach(([question, answers]) => {
+                    if (answers.length === 0) return;
+
+                    const key = question.toLowerCase().includes('brand') ? 'brand' :
+                               question.toLowerCase().includes('budget') || question.toLowerCase().includes('price') ? 'priceRange' :
+                               question.toLowerCase().includes('important') || question.toLowerCase().includes('concern') ? 'concern' :
+                               question.toLowerCase().includes('formula') ? 'formula' :
+                               'other';
+
+                    newContext.gatheredInfo[key] = answers;
+                    console.log(`Mapped ${question} -> ${key}:`, answers);
+                });
+
+                console.log('New context:', newContext);
+                setSessionContext(newContext);
+
+                // Filter results based on ALL selected answers
+                if (!sessionContext.initialSearchResults || !sessionContext.initialSearchResults.hits) {
+                    console.error('No initial search results stored!', sessionContext);
+                    setMessages(prev => [...prev, {
+                        role: 'agent',
+                        content: "Sorry, I lost the search results. Let me search again for you.",
+                        timestamp: new Date()
+                    }]);
+                    setIsLoading(false);
+                    return;
+                }
+
+                let filteredResults = [...sessionContext.initialSearchResults.hits];
+                console.log('Starting with results:', filteredResults.length);
+
+                    // Apply brand filter (OR logic within brands)
+                    if (newContext.gatheredInfo.brand && newContext.gatheredInfo.brand.length > 0) {
+                        const brands = newContext.gatheredInfo.brand.filter(b => b !== "No preference" && b !== "Show all");
+                        if (brands.length > 0) {
+                            filteredResults = filteredResults.filter(h => brands.includes(h.brand_name));
+                            console.log('After brand filter:', filteredResults.length, 'brands:', brands);
+                        }
+                    }
+
+                    // Apply price filter (OR logic within price ranges)
+                    if (newContext.gatheredInfo.priceRange && newContext.gatheredInfo.priceRange.length > 0) {
+                        filteredResults = filteredResults.filter(h => {
+                            const price = h.price_numeric;
+                            if (!price || price <= 0) return false; // Skip products without valid prices
+
+                            return newContext.gatheredInfo.priceRange.some(range => {
+                                if (range === "Under $25") return price < 25;
+                                if (range === "$25-$50") return price >= 25 && price < 50;
+                                if (range === "$50-$100") return price >= 50 && price < 100;
+                                if (range === "Luxury ($100+)") return price >= 100;
+                                return false;
+                            });
+                        });
+                        console.log('After price filter:', filteredResults.length, 'ranges:', newContext.gatheredInfo.priceRange);
+                    }
+
+                    // Apply concern/attribute filter (OR logic within concerns)
+                    if (newContext.gatheredInfo.concern && newContext.gatheredInfo.concern.length > 0) {
+                        const concerns = newContext.gatheredInfo.concern.filter(c => c !== "Show all");
+                        if (concerns.length > 0) {
+                            filteredResults = filteredResults.filter(h =>
+                                concerns.some(concern =>
+                                    (h.highlights || []).some(highlight =>
+                                        highlight.toLowerCase().includes(concern.toLowerCase())
+                                    )
+                                )
+                            );
+                            console.log('After concern filter:', filteredResults.length, 'concerns:', concerns);
+                        }
+                    }
+
+                    console.log('Final filtered results:', filteredResults.length);
+
+                    // Check if we have results
+                    if (filteredResults.length === 0) {
+                        setMessages(prev => [...prev, {
+                            role: 'agent',
+                            content: `I couldn't find any products matching all your selected filters. Let me show you the closest matches from the original ${sessionContext.initialSearchResults.hits.length} products:`,
+                            products: sessionContext.initialSearchResults.hits.slice(0, 6).map(p => ({
+                                id: p.product_id,
+                                name: p.product_name,
+                                brand: p.brand_name,
+                                price: p.price_numeric,
+                                image: p.primary_image_url,
+                                description: p.quick_look_description || p.short_description,
+                                rating: p.rating,
+                                url: p.product_url
+                            })),
+                            timestamp: new Date()
+                        }]);
+
+                        setSessionContext(prev => ({
+                            ...prev,
+                            searchPerformed: true
+                        }));
+
+                        setSelectedAnswers({});
+                        setIsLoading(false);
+                        return;
+                    }
+
+                    // Show filtered results
+                    const formatted = formatSearchResults({ hits: filteredResults }, newContext.gatheredInfo);
+
+                    setMessages(prev => [...prev, {
+                        role: 'agent',
+                        content: formatted.message + ` (${filteredResults.length} products found)`,
+                        products: formatted.products,
+                        timestamp: new Date()
+                    }]);
+
+                    setSessionContext(prev => ({
+                        ...prev,
+                        searchPerformed: true
+                    }));
+
+                    // Clear selections
+                    setSelectedAnswers({});
+                }
+
+                setIsLoading(false);
+            };
+
+            // Handle quick reply selection (DEPRECATED - keeping for compatibility)
+            const handleQuickReply = async (question, answer) => {
+                // Update context
+                const key = question.toLowerCase().includes('brand') ? 'brand' :
+                           question.toLowerCase().includes('budget') || question.toLowerCase().includes('price') ? 'priceRange' :
+                           question.toLowerCase().includes('important') || question.toLowerCase().includes('concern') ? 'concern' :
+                           question.toLowerCase().includes('formula') ? 'formula' :
+                           'ingredients';
+
+                const newContext = {
+                    ...sessionContext,
+                    gatheredInfo: {
+                        ...sessionContext.gatheredInfo,
+                        [key]: answer
+                    }
+                };
+
+                setSessionContext(newContext);
+
+                // Add user message
+                setMessages(prev => [...prev, {
+                    role: 'user',
+                    content: answer,
+                    timestamp: new Date()
+                }]);
+
+                setIsLoading(true);
+                await new Promise(resolve => setTimeout(resolve, 500));
+
+                // If we have initial search results, filter them
+                if (sessionContext.initialSearchResults) {
+                    let filteredResults = [...sessionContext.initialSearchResults.hits];
+
+                    // Apply filters
+                    if (newContext.gatheredInfo.brand && answer !== "No preference" && answer !== "Show all") {
+                        filteredResults = filteredResults.filter(h => h.brand_name === answer);
+                    }
+
+                    if (newContext.gatheredInfo.priceRange) {
+                        const priceFilter = newContext.gatheredInfo.priceRange;
+                        filteredResults = filteredResults.filter(h => {
+                            const price = h.price_numeric;
+                            if (priceFilter === "Under $25") return price < 25;
+                            if (priceFilter === "$25-$50") return price >= 25 && price < 50;
+                            if (priceFilter === "$50-$100") return price >= 50 && price < 100;
+                            if (priceFilter === "Luxury ($100+)") return price >= 100;
+                            return true;
+                        });
+                    }
+
+                    if (newContext.gatheredInfo.concern && answer !== "Show all") {
+                        filteredResults = filteredResults.filter(h =>
+                            (h.highlights || []).some(highlight =>
+                                highlight.toLowerCase().includes(answer.toLowerCase())
+                            )
+                        );
+                    }
+
+                    // Check if we've answered enough questions or have enough filters
+                    const answeredQuestions = Object.keys(newContext.gatheredInfo).length;
+
+                    if (answeredQuestions >= 2 || filteredResults.length <= 10) {
+                        // Show filtered results
+                        const formatted = formatSearchResults({ hits: filteredResults }, newContext.gatheredInfo);
+
+                        setMessages(prev => [...prev, {
+                            role: 'agent',
+                            content: formatted.message + ` (${filteredResults.length} matches)`,
+                            products: formatted.products,
+                            timestamp: new Date()
+                        }]);
+
+                        setSessionContext(prev => ({
+                            ...prev,
+                            searchPerformed: true
+                        }));
+                    } else {
+                        // Ask another clarifying question
+                        const clarification = generateClarifyingQuestions(sessionContext.originalQuery, newContext, { hits: filteredResults });
+
+                        if (clarification.questions.length > 0) {
+                            setMessages(prev => [...prev, {
+                                role: 'agent',
+                                content: `Great! I've narrowed it down to ${filteredResults.length} products. One more question:`,
+                                clarifyingQuestions: clarification.questions,
+                                timestamp: new Date()
+                            }]);
+                        }
+                    }
+                } else {
+                    // No stored results, trigger new search
+                    setInputValue(sessionContext.originalQuery || "moisturizer");
+                    setTimeout(() => {
+                        const event = { preventDefault: () => {} };
+                        handleSendMessage(event);
+                    }, 100);
+                }
+
+                setIsLoading(false);
+            };
+
+            return (
+                <div className="flex h-screen bg-gray-50 justify-center">
+                    <div className="w-full max-w-4xl h-full bg-white shadow-lg flex flex-col">
+                        {/* Header */}
+                        <div className="px-6 py-4 border-b bg-white">
+                            <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center text-white shadow-lg">
+                                    <Icon name="sparkles" size={20} />
+                                </div>
+                                <div>
+                                    <h1 className="font-bold text-lg">Product Discovery Agent</h1>
+                                    <p className="text-xs text-gray-500">Powered by Cimulate AI Search</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Chat Messages */}
+                        <div className="flex-1 overflow-y-auto p-6 space-y-4 scrollbar-hide">
+                            {messages.map((msg, idx) => (
+                                <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                                    <div className={`max-w-[80%] ${msg.role === 'user' ? 'bg-purple-600 text-white' : 'bg-gray-100 text-gray-900'} rounded-2xl px-4 py-3 ${msg.role === 'user' ? 'rounded-tr-none' : 'rounded-tl-none'}`}>
+                                        <p className="text-sm leading-relaxed">{msg.content}</p>
+
+                                        {/* Clarifying Questions */}
+                                        {msg.clarifyingQuestions && (
+                                            <div className="mt-4 space-y-4">
+                                                {msg.clarifyingQuestions.map((q, qIdx) => (
+                                                    <div key={qIdx} className="bg-white rounded-xl p-4 border border-gray-200">
+                                                        <p className="font-semibold text-sm mb-1">{q.question}</p>
+                                                        <p className="text-xs text-gray-600 mb-3">💡 {q.why}</p>
+                                                        <div className="flex flex-wrap gap-2">
+                                                            {q.options.map((opt, oIdx) => {
+                                                                const isSelected = (selectedAnswers[q.question] || []).includes(opt);
+                                                                return (
+                                                                    <button
+                                                                        key={oIdx}
+                                                                        onClick={() => toggleAnswer(q.question, opt)}
+                                                                        className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all ${
+                                                                            isSelected
+                                                                                ? 'bg-purple-600 text-white shadow-md scale-105'
+                                                                                : 'bg-purple-50 hover:bg-purple-100 text-purple-700'
+                                                                        }`}
+                                                                    >
+                                                                        {isSelected && <span className="mr-1">✓</span>}
+                                                                        {opt}
+                                                                    </button>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    </div>
+                                                ))}
+
+                                                {/* Search Button */}
+                                                {Object.values(selectedAnswers).some(arr => arr.length > 0) && (
+                                                    <button
+                                                        onClick={executeSearchWithAnswers}
+                                                        disabled={isLoading}
+                                                        className="w-full py-3 bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-xl font-bold text-sm shadow-lg hover:shadow-xl transition-all active:scale-95 disabled:opacity-50 flex items-center justify-center gap-2"
+                                                    >
+                                                        <Icon name="search" size={18} />
+                                                        Search Products ({Object.values(selectedAnswers).reduce((sum, arr) => sum + arr.length, 0)} filters selected)
+                                                    </button>
+                                                )}
+                                            </div>
+                                        )}
+
+                                        {/* Product Results */}
+                                        {msg.products && msg.products.length > 0 && (
+                                            <div className="mt-4 grid grid-cols-2 gap-3">
+                                                {msg.products.map((product, pIdx) => (
+                                                    <div key={pIdx} className="bg-white rounded-xl overflow-hidden border border-gray-200 hover:shadow-md transition-shadow">
+                                                        <div className="aspect-square bg-gray-100 flex items-center justify-center">
+                                                            {product.image ? (
+                                                                <img src={product.image} alt={product.name} className="w-full h-full object-cover" />
+                                                            ) : (
+                                                                <Icon name="package" size={40} className="text-gray-300" />
+                                                            )}
+                                                        </div>
+                                                        <div className="p-3">
+                                                            <p className="text-xs font-semibold text-gray-900 line-clamp-2">{product.name}</p>
+                                                            {product.brand && <p className="text-xs text-gray-500 mt-1">{product.brand}</p>}
+                                                            {product.price && <p className="text-sm font-bold text-purple-600 mt-2">${product.price}</p>}
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            ))}
+
+                            {isLoading && (
+                                <div className="flex justify-start">
+                                    <div className="bg-gray-100 rounded-2xl rounded-tl-none px-4 py-3">
+                                        <div className="flex items-center gap-2">
+                                            <Icon name="loader-2" size={16} className="animate-spin text-purple-600" />
+                                            <span className="text-sm text-gray-600">Analyzing...</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            <div ref={chatEndRef} />
+                        </div>
+
+                        {/* Input */}
+                        <form onSubmit={handleSendMessage} className="p-4 border-t bg-white">
+                            <div className="relative">
+                                <input
+                                    type="text"
+                                    value={inputValue}
+                                    onChange={(e) => setInputValue(e.target.value)}
+                                    placeholder="Describe what you're looking for..."
+                                    className="w-full bg-gray-100 rounded-full px-6 py-3 pr-12 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                                    disabled={isLoading}
+                                />
+                                <button
+                                    type="submit"
+                                    disabled={isLoading || !inputValue.trim()}
+                                    className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 bg-purple-600 text-white rounded-full flex items-center justify-center disabled:opacity-50"
+                                >
+                                    <Icon name="send" size={16} />
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
